@@ -22,6 +22,25 @@ Keep that window open while you use the app — closing it stops the server ("si
 - `npm test` — logic self-checks (recurrence, sleep window, streaks, XP, finance, demo data).
 - `npm run typecheck`
 
+## Hosted version (Vercel, end-to-end encrypted)
+
+Works from any device with no laptop running. Your planner is encrypted in the browser with your passphrase before
+upload; the server (`api/cloud.js`) stores only an unreadable blob, a hash of an access token, and a salt.
+
+1. Push this repo to GitHub (a private repo is fine) and import it in Vercel. `vercel.json` already sets the build.
+2. In the Vercel project: **Storage → Create Database → Upstash for Redis** (free plan), connect it to the project.
+3. **Deployments → Redeploy** so the function sees the storage variables.
+4. Open the site and create your passphrase. Then on the laptop: Settings → Data → Export; on the hosted site:
+   Settings → Data → Import.
+5. On your phone: open the site, enter the passphrase once, then "Add to Home screen". It opens offline and syncs
+   when it is back online.
+
+- **Forgotten passphrase = unreadable cloud copy.** Nobody can reset it. Keep an exported backup.
+- Two devices: a device with stale data is refused and loads the newer copy instead of overwriting it.
+- One encrypted snapshot per day is kept for 35 days (Settings → Data → Restore a daily backup).
+- Start over: delete the `lifeos:*` keys in the Upstash console; the next visit asks for a new passphrase.
+- The local version (`npm start`) keeps working and keeps its own separate data file.
+
 ## Your data
 
 - Stored in `data/lifeos.json` next to this file; a daily copy goes to `data/backups/` (last 30 days).

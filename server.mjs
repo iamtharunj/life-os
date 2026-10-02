@@ -111,6 +111,8 @@ function handle(req, res) {
   if (!LAN && !localHost.test(req.headers.host ?? '')) { res.statusCode = 403; return res.end('Forbidden'); }
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/api/db') return api(req, res);
+  // The app asks whether it is the hosted (encrypted cloud) build; this local server is not.
+  if (url.pathname === '/api/cloud') { res.setHeader('Content-Type', 'application/json'); return res.end('{"cloud":false}'); }
   if (DEV && url.pathname === '/__reload') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
     reloaders.add(res);

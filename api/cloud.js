@@ -21,7 +21,14 @@ export const store = {
     return (await r.json()).map(x => { if (x.error) throw new Error(x.error); return x.result; });
   },
 };
-function env(name) { return process.env[`KV_REST_API_${name}`] ?? process.env[`UPSTASH_REDIS_REST_${name}`]; }
+// Vercel names these KV_REST_API_URL / KV_REST_API_TOKEN (or with a custom prefix); Upstash's own integration
+// uses UPSTASH_REDIS_REST_URL / _TOKEN. Accept any of them, never the read-only token.
+function env(name) {
+  const keys = Object.keys(process.env).filter(k => !k.includes('READ_ONLY'));
+  const key = keys.find(k => k === `KV_REST_API_${name}` || k === `UPSTASH_REDIS_REST_${name}`)
+    ?? keys.find(k => k.endsWith(`_REST_API_${name}`) || k.endsWith(`_REDIS_REST_${name}`));
+  return key && process.env[key];
+}
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 const sha = s => createHash('sha256').update(s).digest('hex');
