@@ -1,0 +1,21 @@
+# deps & build output
+node_modules
+dist
+site
+*.tsbuildinfo
+
+# personal planner data + backups (never commit)
+data/
+
+# secrets / deploy state
+.env
+.env.*
+.vercel
+
+# logs & OS junk
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode
+.idea
