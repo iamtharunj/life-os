@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Bell, CheckSquare, Cloud, CloudOff, Flame, HardDrive, LoaderCircle, Menu, Plus, Search, ShieldCheck, Sun, CalendarDays, TriangleAlert, Info, WifiOff, X, type LucideIcon } from 'lucide-react';
 import { confirmReq, gate, storage, sync, toasts, useDB, ready, undo, type SyncState } from './lib/store.ts';
 import { CloudGate } from './components/CloudGate.tsx';
@@ -139,7 +139,7 @@ export default function App() {
           <Btn variant="primary" icon={Plus} className="hide-m" onClick={() => openCapture('task')}>Capture <span className="kbd" style={{ background: 'transparent', borderColor: 'rgba(0,0,0,.25)', color: 'inherit' }}>C</span></Btn>
         </header>
         <main key={route.get()}>
-          <Page />
+          <PageBoundary><Page /></PageBoundary>
         </main>
       </div>
 
@@ -168,6 +168,26 @@ export default function App() {
   );
 }
 
+
+/** A bug on one page shows a message there; navigation, capture and your data keep working. */
+class PageBoundary extends Component<{ children: ReactNode }, { error?: Error }> {
+  state: { error?: Error } = {};
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="page">
+        <div className="card" style={{ maxWidth: 560 }}>
+          <div className="eyebrow" style={{ color: 'var(--bad)' }}>Something broke on this page</div>
+          <h2 className="mt8">Your data is safe</h2>
+          <p className="small dim mt8">This page hit an error while drawing. Other pages still work, and nothing was lost.</p>
+          <pre className="tiny muted mt8" style={{ whiteSpace: 'pre-wrap' }}>{String(this.state.error.message)}</pre>
+          <div className="row mt12"><Btn variant="primary" onClick={() => location.reload()}>Reload</Btn><Btn onClick={() => nav('/tasks')}>Go to Tasks</Btn></div>
+        </div>
+      </div>
+    );
+  }
+}
 
 function NavList({ active, inboxCount }: { active: string; inboxCount: number }) {
   const groups: [string, typeof NAV][] = [

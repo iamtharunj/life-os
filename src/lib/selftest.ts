@@ -164,3 +164,18 @@ assert.notEqual(blob, await seal(k1.key, plain), 'fresh IV every save');
 await assert.rejects(unseal(k2.key, blob), 'wrong key cannot decrypt');
 await assert.rejects(unseal(k1.key, blob.slice(0, 40) + (blob[40] === 'A' ? 'B' : 'A') + blob.slice(41)), 'tampering is detected');
 console.log(`selftest: encryption ok (${Math.round(plain.length / 1024)} KB planner -> ${Math.round(blob.length / 1024)} KB encrypted)`);
+
+// pixel scenery must build at every hour (a daytime-only crash once blanked the whole app)
+import { buildScene, phaseOf } from './scene.ts';
+(globalThis as any).ImageData ??= class { data: Uint8ClampedArray; constructor(width: number, height: number) { this.data = new Uint8ClampedArray(width * height * 4); } };
+const phases = new Set<string>();
+for (let hour = 0; hour < 24; hour++) {
+  phases.add(phaseOf(hour));
+  for (const [W, H] of [[64, 48], [133, 48], [248, 64], [300, 72], [174, 120], [72, 64]]) for (const seed of [3, 7, 11, 23]) {
+    const sc = buildScene(W, H, phaseOf(hour), seed);
+    assert.equal(sc.back.data.length, W * H * 4, `scene at ${hour}:00 ${W}x${H}`);
+    assert.ok(sc.back.data.some(v => v > 0), 'sky was painted');
+  }
+}
+assert.deepEqual([...phases].sort(), ['dawn', 'day', 'dusk', 'night']);
+console.log('selftest: scenery ok at every hour');
