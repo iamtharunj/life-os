@@ -1,0 +1,27 @@
+{
+  "appId": "io.github.iamtharunj.lifeos",
+  "appName": "Life OS",
+  "webDir": "mobile",
+  "loggingBehavior": "none",
+  "backgroundColor": "#0c0d0b",
+  "server": {
+    "androidScheme": "https",
+    "hostname": "localhost",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false,
+    "minWebViewVersion": 100
+  },
+  "plugins": {
+    "SystemBars": {
+      "style": "DARK",
+      "initialViewportFitValueHint": "cover"
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_lifeos",
+      "iconColor": "#7dff6a"
+    }
+  }
+}

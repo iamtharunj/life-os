@@ -10,6 +10,7 @@ import { AREAS, HACK_STAGES, OPEN_STATUSES, PRIORITY, PROJECT_STATUS, PROJECT_TY
 import { addMilestone, addProjectUpdate, quickTask, toggleMilestone } from '../lib/actions.ts';
 import { startTimer } from '../lib/focus.ts';
 import { Btn, Card, CheckBox, Empty, Meter, Pill, QuickAdd, Ring, Tabs, nav, tilt, useRoute, usePref } from '../components/ui.tsx';
+import { safeHref } from '../lib/platform.ts';
 import { TaskRow } from '../components/rows.tsx';
 import { openEditor } from '../components/editors.tsx';
 import { PROJECT_ICON } from '../components/icons.tsx';
@@ -180,7 +181,7 @@ function HackCard({ p }: { p: Project }) {
       {h.stack && <div className="chips mt8">{h.stack.split(',').map(s => s.trim()).filter(Boolean).map(s => <span key={s} className="pill outline">{s}</span>)}</div>}
       <div className="row mt12 small">
         {p.team && <span className="muted grow"><Users size={12} /> {p.team}</span>}
-        {h.submissionLink && <a className="accent" href={h.submissionLink} target="_blank" rel="noreferrer">Submission <ExternalLink size={11} /></a>}
+        {h.submissionLink && <a className="accent" href={safeHref(h.submissionLink)} target="_blank" rel="noreferrer">Submission <ExternalLink size={11} /></a>}
         {h.result && <Pill tone="good"><Trophy />{h.result}</Pill>}
       </div>
     </Card>
@@ -297,7 +298,7 @@ function ProjectDetail({ p }: { p: Project }) {
           </Card>
           <Card title="Links" icon={Link2}>
             {p.links.length === 0 && <div className="small muted">Repo, docs, competition page… add via Edit.</div>}
-            {p.links.map((l, i) => <a key={i} className="li" href={l.url} target="_blank" rel="noreferrer"><ExternalLink size={13} className="muted" /><span className="grow small accent ellipsis">{l.label || l.url}</span></a>)}
+            {p.links.map((l, i) => <a key={i} className="li" href={safeHref(l.url)} target="_blank" rel="noreferrer"><ExternalLink size={13} className="muted" /><span className="grow small accent ellipsis">{l.label || l.url}</span></a>)}
           </Card>
           {notes.length > 0 && (
             <Card title="Notes">

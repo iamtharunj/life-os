@@ -2,9 +2,11 @@
 //   PBKDF2(passphrase, salt) → 64 bytes → first half is the AES-256-GCM key (stays here),
 //   second half is the access token (sent to the server, which stores only its hash).
 // The planner is gzipped, encrypted, and uploaded as an opaque blob.
+import { CLOUD_API } from './platform.ts';
+import { secure, Unreadable } from './vault.ts';
 
 const CREDS = 'lifeos.cloud';
-const ITERATIONS = 600_000;
+export const ITERATIONS = 600_000;
 
 export class WrongPassphrase extends Error {}
 export interface Meta { cloud: true; configured: boolean; exists?: boolean; salt?: string; rev?: number }
@@ -45,11 +47,26 @@ export async function unseal(key: string, blob: string) {
 }
 
 // ------------------------------------------------------------------ this device
-export const savedCreds = (): Creds | null => { try { return JSON.parse(localStorage.getItem(CREDS) ?? 'null'); } catch { return null; } };
-export const forget = () => { try { localStorage.removeItem(CREDS); } catch { /* ignore */ } };
+// The keys are read once at startup and held in memory; on the phone they are stored encrypted (see vault.ts).
+let creds: Creds | null = null;
+/** Load this device's saved keys. Throws Unreadable (app only) when they exist but cannot be decrypted. */
+export async function restore() {
+  creds = null;
+  try { creds = JSON.parse((await secure.get(CREDS)) ?? 'null'); }
+  catch (e) { if (e instanceof Unreadable) throw e; /* blocked storage or a damaged entry: same as none saved */ }
+}
+export const savedCreds = () => creds;
+export async function forget() {
+  creds = null;
+  try { await secure.remove(CREDS); } catch { /* ignore */ }
+}
+async function remember(next: Creds) {
+  creds = next;
+  await secure.set(CREDS, JSON.stringify(next));
+}
 /** Derive the keys and remember them on this device (so the passphrase is typed once per device). */
 export async function unlock(passphrase: string, salt = newSalt()) {
-  localStorage.setItem(CREDS, JSON.stringify({ salt, ...(await derive(passphrase, salt)) }));
+  await remember({ salt, ...(await derive(passphrase, salt)) });
 }
 
 // ------------------------------------------------------------------ server calls
@@ -58,7 +75,7 @@ const auth = () => ({ Authorization: `Bearer ${savedCreds()!.token}` });
 /** undefined when this isn't the hosted build (or we're offline). */
 export async function meta(): Promise<Meta | undefined> {
   try {
-    const r = await fetch('/api/cloud?meta', { cache: 'no-store' });
+    const r = await fetch(CLOUD_API + '?meta', { cache: 'no-store' });
     if (!r.ok || !(r.headers.get('content-type') ?? '').includes('json')) return undefined;
     const m = await r.json();
     return m?.cloud ? m : undefined;
@@ -67,7 +84,7 @@ export async function meta(): Promise<Meta | undefined> {
 
 /** Latest planner (or one day's backup). null = nothing saved yet. Throws WrongPassphrase on 401/429. */
 export async function pull(day?: string) {
-  const r = await fetch('/api/cloud' + (day ? `?backup=${day}` : ''), { headers: auth(), cache: 'no-store' });
+  const r = await fetch(CLOUD_API + (day ? `?backup=${day}` : ''), { headers: auth(), cache: 'no-store' });
   if (r.status === 404) return null;
   if (r.status === 401 || r.status === 429) throw new WrongPassphrase((await r.json()).error);
   if (!r.ok) throw new Error(`sync failed (${r.status})`);
@@ -75,21 +92,23 @@ export async function pull(day?: string) {
   return { rev: rev as number, json: await unseal(savedCreds()!.key, blob) };
 }
 
-export async function push(json: string, base: number, savedAt: string) {
-  const c = savedCreds()!;
-  const r = await fetch('/api/cloud', {
+/** `next`: change the passphrase in the same save — encrypt under the new key and hand the server the new token. */
+export async function push(json: string, base: number, savedAt: string, next?: Creds) {
+  const c = next ?? savedCreds()!;
+  const r = await fetch(CLOUD_API, {
     method: 'PUT', headers: { ...auth(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ blob: await seal(c.key, json), base, salt: c.salt, savedAt }),
+    body: JSON.stringify({ blob: await seal(c.key, json), base, salt: c.salt, savedAt, newToken: next?.token }),
   });
   if (r.status === 409) return { ok: false as const };
   if (r.status === 401 || r.status === 429) throw new WrongPassphrase((await r.json()).error);
   if (!r.ok) throw new Error(`sync failed (${r.status})`);
+  if (next) await remember(next);
   return { ok: true as const, rev: (await r.json()).rev as number };
 }
 
 export async function backups(): Promise<string[]> {
   try {
-    const r = await fetch('/api/cloud?backups', { headers: auth(), cache: 'no-store' });
+    const r = await fetch(CLOUD_API + '?backups', { headers: auth(), cache: 'no-store' });
     return r.ok ? (await r.json()).days : [];
   } catch { return []; }
 }

@@ -345,12 +345,51 @@ export function seedDB(): DB {
   return db;
 }
 
-/** Strip every demo record, keeping anything the user created. */
+const DEMO_WEEK_TOP3 = ['Submit Amazon ML baseline', 'Heat Transfer assignment + CAT prep', 'Sleep ≥ 7.5h five nights'];
+const RECORD_LABELS: Record<string, string> = {
+  courses: 'course', tasks: 'task', blocks: 'time block', exams: 'exam', study: 'study session', workouts: 'workout', templates: 'workout template',
+  meals: 'meal', txns: 'transaction', subs: 'subscription', sleep: 'sleep log', habits: 'habit', habitLogs: 'habit check-in', projects: 'project',
+  goals: 'goal', notes: 'note', reviews: 'review', focus: 'focus session', meditations: 'meditation', journal: 'journal entry', rewards: 'reward',
+};
+
+/**
+ * Strip every demo record and keep everything the user created: their records, the days they touched,
+ * week priorities they typed and missions they claimed. References to removed demo items are cleared.
+ */
 export function withoutDemo(d: DB): DB {
   const out: any = { ...d };
   for (const [k, v] of Object.entries(d)) if (Array.isArray(v)) out[k] = v.filter((x: any) => !x?.demo);
-  out.missions = [];
-  out.days = Object.fromEntries(Object.entries(d.days).filter(([, v]) => !v.demo).map(([k, v]) => [k, { ...v, top3: v.top3.filter(id => !id.startsWith('demo-')) }]));
-  out.weekTop3 = {};
+
+  // links from your records to sample items that no longer exist
+  const alive = new Set<string>(['projects', 'courses', 'goals', 'tasks', 'habits'].flatMap(k => out[k].map((x: any) => x.id)));
+  const REFS = ['projectId', 'courseId', 'goalId', 'taskId', 'parentId'];
+  for (const [k, v] of Object.entries(out)) {
+    if (!Array.isArray(v)) continue;
+    out[k] = v.map((x: any) => (REFS.some(f => x?.[f] && !alive.has(x[f])) ? { ...x, ...Object.fromEntries(REFS.filter(f => x[f] && !alive.has(x[f])).map(f => [f, undefined])) } : x));
+  }
+  out.habitLogs = out.habitLogs.filter((l: any) => alive.has(l.habitId));
+
+  out.days = Object.fromEntries(Object.entries(d.days).filter(([, v]) => !v.demo).map(([k, v]) => [k, { ...v, top3: v.top3.filter(id => alive.has(id)) }]));
+  // week priorities: blank the sample lines, keep any line you typed
+  out.weekTop3 = Object.fromEntries(Object.entries(d.weekTop3).map(([k, v]) => [k, v.map(x => (DEMO_WEEK_TOP3.includes(x) ? '' : x))] as const).filter(([, v]) => v.some(Boolean)));
+  // The sample history includes one claimed mission from before you started; yours came after your first own record.
+  const firstOwn = Object.values(out).flatMap(v => (Array.isArray(v) ? v : [])).map((x: any) => x?.createdAt?.slice(0, 10)).filter(Boolean).sort()[0];
+  out.missions = firstOwn ? d.missions.filter(m => m.date >= firstOwn) : [];
   return out;
+}
+
+const plural = (n: number, w: string) => (n === 1 ? w : w.endsWith('y') ? w.slice(0, -1) + 'ies' : w + 's');
+
+/** What "Remove demo data" would do, for the confirmation dialog. */
+export function demoSummary(d: DB) {
+  const after = withoutDemo(d);
+  let removed = 0;
+  const kept: string[] = [];
+  for (const [k, v] of Object.entries(d)) {
+    if (!Array.isArray(v) || k === 'missions') continue;
+    const n = ((after as any)[k] as unknown[]).length;
+    removed += v.length - n;
+    if (n && RECORD_LABELS[k]) kept.push(`${n} ${plural(n, RECORD_LABELS[k])}`);
+  }
+  return { removed, kept };
 }

@@ -2,6 +2,8 @@ import { useSyncExternalStore } from 'react';
 import type { Coll, DB, DateStr, DayLog, ID, Settings } from './types.ts';
 import { today } from './dates.ts';
 import * as cloud from './cloud.ts';
+import { native } from './platform.ts';
+import { secure, Unreadable } from './vault.ts';
 
 // ---------------------------------------------------------------------------
 // Tiny signal: module-level state any component can subscribe to.
@@ -103,7 +105,8 @@ export const ready = signal(false);
 /** Where the planner lives: a file via the local server, the encrypted cloud copy, or only this browser. */
 export const storage = signal<'file' | 'cloud' | 'browser'>('browser');
 /** Hosted build only: what has to happen before the planner can open. */
-export const gate = signal<null | { kind: 'setup' | 'unlock' | 'unconfigured'; salt?: string }>(null);
+export type GateKind = 'setup' | 'unlock' | 'unconfigured' | 'offline' | 'recover';
+export const gate = signal<null | { kind: GateKind; salt?: string; note?: string; empty?: boolean }>(null);
 
 export const getDB = () => db;
 export const subscribe = (f: () => void) => { listeners.add(f); return () => { listeners.delete(f); }; };
@@ -121,6 +124,11 @@ const ls = {
   set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* quota or private mode */ } },
 };
 const setRev = (n: number) => { rev = n; ls.set(LS_REV, String(n)); };
+/** Write this device's copy of the planner (encrypted in the app). False only in the app, when that write failed. */
+async function keepLocal(body: string) {
+  try { await secure.set(LS_KEY, body); return true; }
+  catch { return !native; } // website: a full or blocked localStorage was always ignored
+}
 
 function setDB(next: DB, persist = true) {
   db = next;
@@ -141,8 +149,8 @@ export async function flush() {
   pending = false;
   db = { ...db, savedAt: new Date().toISOString() };
   const body = JSON.stringify(db);
-  ls.set(LS_KEY, body);
-  if (storage.get() === 'cloud') return flushCloud(body);
+  const kept = await keepLocal(body);
+  if (storage.get() === 'cloud') return flushCloud(body, kept);
   if (!serverOK) { sync.set('local'); return; }
   try {
     const r = await fetch('/api/db', { method: 'PUT', body, headers: { 'Content-Type': 'application/json' } });
@@ -153,7 +161,7 @@ export async function flush() {
   }
 }
 
-async function flushCloud(body: string) {
+async function flushCloud(body: string, kept = true) {
   if (pushing) { pending = true; return; } // one upload at a time; the running one re-flushes when it finishes
   pushing = true;
   ls.set(LS_DIRTY, '1');
@@ -171,7 +179,7 @@ async function flushCloud(body: string) {
   } catch (e) {
     if (e instanceof cloud.WrongPassphrase) { relock(); return; }
     pending = true; // offline or server trouble: the change is safe on this device and retried on reconnect
-    sync.set('offline');
+    sync.set(kept ? 'offline' : 'error'); // never "saved here" when the copy on this device was not written
   } finally {
     pushing = false;
     if (pending && sync.get() !== 'offline') scheduleSave();
@@ -184,20 +192,21 @@ async function adoptCloud() {
   if (!latest) return;
   setRev(latest.rev);
   ls.set(LS_DIRTY, '');
-  ls.set(LS_KEY, latest.json);
+  await keepLocal(latest.json);
   pending = false;
   clearTimeout(saveTimer);
   setDB(migrate(JSON.parse(latest.json)), false);
   sync.set('saved');
 }
-function relock() { cloud.forget(); location.reload(); }
+async function relock() { await cloud.forget(); location.reload(); }
 
-function readLocal(): DB | null {
+/** This device's copy. Throws Unreadable (app only) when it exists but cannot be decrypted. */
+async function readLocal(): Promise<DB | null> {
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = await secure.get(LS_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
     return isDB(parsed) ? parsed : null;
-  } catch { return null; }
+  } catch (e) { if (e instanceof Unreadable) throw e; return null; }
 }
 
 async function readServer(): Promise<DB | null | undefined> {
@@ -212,17 +221,15 @@ async function readServer(): Promise<DB | null | undefined> {
   } catch { return undefined; }
 }
 
-export async function load(seed: () => DB) {
-  seedFn = seed;
-  const m = await cloud.meta();
-  if (m || cloud.savedCreds()) { storage.set('cloud'); await loadCloud(m); }
-  else await loadFile();
-
-  // ponytail: whole-document sync; the file server is last-write-wins, the cloud refuses stale saves (409).
-  // Per-record merge if two devices ever need to edit at the same moment.
-  const refresh = async () => {
-    if (!ready.get()) return;
-    if (pending) { flush(); return; }
+// ponytail: whole-document sync; the file server is last-write-wins, the cloud refuses stale saves (409).
+// Per-record merge if two devices ever need to edit at the same moment.
+let refreshing = false;
+/** Pick up newer data from the server (window focus, back online, app resumed). */
+export async function refresh() {
+  if (!ready.get() || refreshing) return;
+  if (pending) { flush(); return; }
+  refreshing = true;
+  try {
     if (storage.get() === 'cloud') {
       const now = await cloud.meta();
       if (!now) return; // still offline
@@ -234,7 +241,18 @@ export async function load(seed: () => DB) {
     }
     const s = await readServer();
     if (s && s.savedAt > db.savedAt) setDB(migrate(s), false);
-  };
+  } finally { refreshing = false; }
+}
+
+export async function load(seed: () => DB) {
+  seedFn = seed;
+  let lostKeys = false;
+  try { await cloud.restore(); } catch { lostKeys = true; } // app only: saved keys exist but cannot be decrypted
+  const m = await cloud.meta();
+  // The app always syncs with the hosted backend; the website decides by what its own server offers.
+  if (native || m || cloud.savedCreds()) { storage.set('cloud'); await loadCloud(m, lostKeys); }
+  else await loadFile();
+
   window.addEventListener('focus', refresh);
   window.addEventListener('online', refresh);
   document.addEventListener('visibilitychange', () => {
@@ -242,12 +260,12 @@ export async function load(seed: () => DB) {
     else refresh();
   });
   window.addEventListener('pagehide', () => {
-    if (pending) ls.set(LS_KEY, JSON.stringify(db));
+    if (pending) keepLocal(JSON.stringify(db));
   });
 }
 
 async function loadFile() {
-  const [server, local] = [await readServer(), readLocal()];
+  const [server, local] = [await readServer(), await readLocal()];
   if (serverOK) storage.set('file');
   let chosen: DB | null = server ?? null;
   // Prefer whichever copy was saved most recently (e.g. edits made while the server was down)
@@ -258,13 +276,15 @@ async function loadFile() {
   ready.set(true);
 }
 
-async function loadCloud(m?: cloud.Meta) {
+async function loadCloud(m?: cloud.Meta, lostKeys = false) {
   rev = Number(ls.get(LS_REV)) || 0;
   if (m && !m.configured) { gate.set({ kind: 'unconfigured' }); return; }
   const creds = cloud.savedCreds();
   if (!creds || (m?.exists && creds.salt !== m.salt)) {
-    cloud.forget();
-    gate.set({ kind: m?.exists ? 'unlock' : 'setup', salt: m?.salt });
+    await cloud.forget();
+    const note = lostKeys ? 'This phone could not read its saved keys, so it needs your passphrase again.' : undefined;
+    // Offline with no keys (app only): we cannot tell whether a planner exists, so neither create nor unlock yet.
+    gate.set(m ? { kind: m.exists ? 'unlock' : 'setup', salt: m.salt, note } : { kind: 'offline', note });
     return;
   }
   try { await openCloud(!m); } catch { relock(); }
@@ -272,12 +292,20 @@ async function loadCloud(m?: cloud.Meta) {
 
 /** `strict`: fail instead of falling back to the offline copy (used while checking a typed passphrase). */
 async function openCloud(offline = false, strict = false) {
-  const local = readLocal();
+  let local: DB | null = null;
+  let lost = false; // app only: the copy on this phone exists but cannot be decrypted
+  try { local = await readLocal(); } catch { lost = true; }
   const dirty = ls.get(LS_DIRTY) === '1';
   let latest: Awaited<ReturnType<typeof cloud.pull>> | undefined;
   if (!offline) {
     try { latest = await cloud.pull(); }
     catch (e) { if (strict || e instanceof cloud.WrongPassphrase) throw e; }
+  }
+  if (lost && !latest) {
+    // Fail closed: never start an empty planner over data we could not read. The recovery screen lets the user decide.
+    // `empty`: the cloud is known to hold nothing, so starting over cannot replace anything there.
+    gate.set({ kind: 'recover', empty: latest === null, note: latest === null ? 'Your cloud copy is empty, so there is nothing to restore from.' : 'Go online and try again to restore from your encrypted cloud copy.' });
+    return;
   }
   if (latest === undefined) { // offline: work from this device's copy and sync when back online
     setDB(migrate(local ?? seedFn()), false);
@@ -289,10 +317,11 @@ async function openCloud(offline = false, strict = false) {
   } else if (dirty && local && latest.rev === rev) { // changes made offline here, and no other device saved meanwhile
     setDB(migrate(local), true);
   } else {
-    if (dirty) toast('Changes made offline on this device were replaced by newer data from another device.', { kind: 'warn' });
+    if (lost) toast(`This phone could not read its saved copy, so the planner was restored from the cloud.${dirty ? ' Changes made offline here were lost.' : ''}`, { kind: 'warn' });
+    else if (dirty) toast('Changes made offline on this device were replaced by newer data from another device.', { kind: 'warn' });
     setRev(latest.rev);
     ls.set(LS_DIRTY, '');
-    ls.set(LS_KEY, latest.json);
+    await keepLocal(latest.json);
     setDB(migrate(JSON.parse(latest.json)), false);
     sync.set('saved');
   }
@@ -304,7 +333,31 @@ async function openCloud(offline = false, strict = false) {
 export async function unlockCloud(passphrase: string) {
   await cloud.unlock(passphrase, gate.get()?.salt);
   try { await openCloud(false, true); }
-  catch (e) { cloud.forget(); throw e; }
+  catch (e) { await cloud.forget(); throw e; }
+}
+/** Recovery screen (app only): carry on with a backup file or a fresh planner after the local copy proved unreadable. */
+export function recoverWith(next: DB | null) {
+  setDB(migrate(next ?? seedFn()), true);
+  gate.set(null);
+  ready.set(true);
+}
+/** Re-encrypt the planner under a new passphrase. Other devices are asked for it the next time they sync. */
+export async function changePassphrase(current: string, next: string) {
+  const old = cloud.savedCreds()!;
+  if ((await cloud.derive(current, old.salt)).token !== old.token) throw new cloud.WrongPassphrase('That is not your current passphrase.');
+  const salt = cloud.newSalt();
+  const creds = { salt, ...(await cloud.derive(next, salt)) };
+  while (pushing) await new Promise(r => setTimeout(r, 100)); // let a save that is already uploading finish
+  pushing = true;
+  try {
+    let r = await cloud.push(JSON.stringify(db), rev, db.savedAt, creds);
+    if (!r.ok) { await adoptCloud(); r = await cloud.push(JSON.stringify(db), rev, db.savedAt, creds); } // another device saved first: take its copy, then retry once
+    if (!r.ok) throw new Error('conflict');
+    setRev(r.rev);
+  } finally {
+    pushing = false;
+    if (pending) scheduleSave();
+  }
 }
 export const cloudBackups = cloud.backups;
 export async function restoreBackup(day: string) {
@@ -314,9 +367,10 @@ export async function restoreBackup(day: string) {
   return true;
 }
 /** Forget the passphrase and the local copy on this device. The encrypted cloud copy is untouched. */
-export function lockDevice() {
-  cloud.forget();
-  for (const k of [LS_KEY, LS_REV, LS_DIRTY]) { try { localStorage.removeItem(k); } catch { /* ignore */ } }
+export async function lockDevice() {
+  await cloud.forget();
+  try { await secure.remove(LS_KEY); } catch { /* ignore */ }
+  for (const k of [LS_REV, LS_DIRTY]) { try { localStorage.removeItem(k); } catch { /* ignore */ } }
   location.reload();
 }
 
@@ -399,7 +453,10 @@ export function toast(msg: string, opts: Omit<Toast, 'id' | 'msg'> = {}) {
 }
 
 // Confirm dialog (promise based so any handler can `await confirmBox(...)`)
-export interface ConfirmReq { title: string; body?: string; danger?: boolean; ok?: string; typeToConfirm?: string; resolve: (ok: boolean) => void }
+export interface ConfirmReq { title: string; body?: string; danger?: boolean; ok?: string; typeToConfirm?: string; secret?: boolean; resolve: (ok: boolean, typed: string) => void }
 export const confirmReq = signal<ConfirmReq | null>(null);
 export const confirmBox = (title: string, opts: Partial<Omit<ConfirmReq, 'title' | 'resolve'>> = {}) =>
   new Promise<boolean>(resolve => confirmReq.set({ title, ...opts, resolve }));
+/** Same dialog with a password field. Resolves with what was typed, or null when cancelled. */
+export const askSecret = (title: string, opts: Pick<ConfirmReq, 'body' | 'ok'> = {}) =>
+  new Promise<string | null>(resolve => confirmReq.set({ title, ...opts, secret: true, resolve: (ok, typed) => resolve(ok ? typed : null) }));

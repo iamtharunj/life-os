@@ -44,7 +44,27 @@ async function denied(req, rec, fails) {
   return json({ error: 'Wrong passphrase' }, 401);
 }
 
-export async function GET(req) {
+// Pages on other origins may read responses only if listed here: the Android app, whose bundled pages are served from
+// https://localhost, and the site itself. No wildcard. Auth is a bearer token, never a cookie, so credentials stay off.
+// CORS only decides who may read a response; every data request still needs the token.
+const ALLOWED_ORIGINS = new Set(['https://localhost', 'https://life-os-ecru-omega.vercel.app']);
+function cors(req) {
+  const origin = req.headers.get('origin');
+  return ALLOWED_ORIGINS.has(origin) ? { vary: 'Origin', 'access-control-allow-origin': origin } : { vary: 'Origin' };
+}
+const withCors = handler => async req => {
+  const res = await handler(req);
+  for (const [k, v] of Object.entries(cors(req))) res.headers.set(k, v);
+  return res;
+};
+/** Preflight: the app's calls carry Authorization and Content-Type, so the browser asks first. */
+export function OPTIONS(req) {
+  const headers = cors(req);
+  if (headers['access-control-allow-origin']) Object.assign(headers, { 'access-control-allow-methods': 'GET, PUT, OPTIONS', 'access-control-allow-headers': 'authorization, content-type', 'access-control-max-age': '86400' });
+  return new Response(null, { status: 204, headers });
+}
+
+export const GET = withCors(async req => {
   if (!store.configured()) return json({ cloud: true, configured: false });
   const q = new URL(req.url).searchParams;
   const day = q.get('backup');
@@ -61,17 +81,18 @@ export async function GET(req) {
     return json({ days: keys.map(k => k.slice('lifeos:bak:'.length)).sort().reverse() });
   }
   return json({ rev: rec.rev, savedAt: rec.savedAt, blob: rec.blob });
-}
+});
 
-export async function PUT(req) {
+export const PUT = withCors(async req => {
   if (!store.configured()) return json({ error: 'Storage is not connected' }, 503);
   const text = await req.text();
   if (text.length > MAX_BODY) return json({ error: 'Planner is too large to sync' }, 413);
   let body;
   try { body = JSON.parse(text); } catch { return json({ error: 'Bad JSON' }, 400); }
-  const { blob, base, salt, savedAt } = body ?? {};
+  const { blob, base, salt, savedAt, newToken } = body ?? {};
   const token = bearer(req);
   if (typeof blob !== 'string' || !blob || typeof salt !== 'string' || !salt || token.length < 32) return json({ error: 'Bad request' }, 400);
+  if (newToken !== undefined && (typeof newToken !== 'string' || newToken.length < 32)) return json({ error: 'Bad request' }, 400);
 
   const [raw, fails] = await store.pipeline([['GET', MAIN], ['GET', failKey(req)]]);
   const rec = raw ? JSON.parse(raw) : null;
@@ -84,8 +105,11 @@ export async function PUT(req) {
   // First save claims the planner: its token becomes the only one accepted from then on.
   // ponytail: read-then-write is not atomic, so two saves within the same few milliseconds could both pass.
   // Fine for one person; switch to a Lua compare-and-set if that ever matters.
-  const next = { auth: rec?.auth ?? sha(token), salt: rec?.salt ?? salt, rev: (rec?.rev ?? 0) + 1, savedAt: typeof savedAt === 'string' ? savedAt : new Date().toISOString(), blob };
+  // Passphrase change: the blob arrives re-encrypted under the new key, and newToken + salt replace the old ones.
+  const next = { auth: newToken ? sha(newToken) : rec?.auth ?? sha(token), salt: newToken ? salt : rec?.salt ?? salt, rev: (rec?.rev ?? 0) + 1, savedAt: typeof savedAt === 'string' ? savedAt : new Date().toISOString(), blob };
   const value = JSON.stringify(next);
-  await store.pipeline([['SET', MAIN, value], ['SET', `lifeos:bak:${new Date().toISOString().slice(0, 10)}`, value, 'EX', BACKUP_SECONDS]]);
+  // The daily backups go with the old passphrase: it could still fetch them, and the new one cannot read them.
+  const old = newToken ? (await store.pipeline([['KEYS', 'lifeos:bak:*']]))[0] : [];
+  await store.pipeline([['SET', MAIN, value], ...(old.length ? [['DEL', ...old]] : []), ['SET', `lifeos:bak:${new Date().toISOString().slice(0, 10)}`, value, 'EX', BACKUP_SECONDS]]);
   return json({ rev: next.rev });
-}
+});

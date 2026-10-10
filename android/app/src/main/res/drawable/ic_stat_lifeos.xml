@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar icon for reminders: the same mark, as the single-colour silhouette Android requires. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M5,3h4v18h-4z M9,17h10v4h-10z M15,3h4v4h-4z" />
+</vector>
