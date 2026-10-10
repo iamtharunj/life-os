@@ -1,7 +1,9 @@
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Bell, CheckSquare, Cloud, CloudOff, Flame, HardDrive, LoaderCircle, Menu, Plus, Search, ShieldCheck, Sun, CalendarDays, TriangleAlert, Info, WifiOff, X, type LucideIcon } from 'lucide-react';
 import { confirmReq, gate, storage, sync, toasts, useDB, ready, undo, type SyncState } from './lib/store.ts';
-import { CloudGate } from './components/CloudGate.tsx';
+import { CloudGate, LockScreen } from './components/CloudGate.tsx';
+import { appLocked } from './lib/native.ts';
+import { native } from './lib/platform.ts';
 import { xpTotals, warnings, levelTitle, buddyLines } from './lib/derive.ts';
 import { tickTimer, timer, remainingMs, fmtClock, running } from './lib/focus.ts';
 import { EditorHost, openCapture } from './components/editors.tsx';
@@ -46,6 +48,7 @@ export default function App() {
   const d = useDB();
   const isReady = ready.use();
   const locked = gate.use();
+  const appLock = appLocked.use();
   const parts = useRoute();
   const Page = PAGES[parts[0] ?? 'today'] ?? Today;
   const [more, setMore] = useState(false);
@@ -99,7 +102,8 @@ export default function App() {
   const inboxCount = d.notes.filter(n => n.inbox).length;
   const active = '/' + (parts[0] ?? 'today');
 
-  if (locked) return <CloudGate kind={locked.kind} />;
+  if (appLock) return <LockScreen />;
+  if (locked) return <><CloudGate kind={locked.kind} note={locked.note} empty={locked.empty} /><ConfirmHost /><Toasts /></>;
   if (!isReady) return <div style={{ display: 'grid', placeItems: 'center', height: '100vh' }} className="muted"><LoaderCircle className="spin" /> Loading your Life OS…</div>;
 
   return (
@@ -224,8 +228,8 @@ function useSyncInfo() {
       ? [ShieldCheck, 'Synced · encrypted', 'good', 'Encrypted on this device before upload. Only your passphrase can read it.']
       : [HardDrive, 'Saved to disk', 'good', 'Stored in data/lifeos.json with daily backups'],
     local: [HardDrive, 'Saved in browser', 'warn', 'No server: data is in this browser only. Export backups regularly.'],
-    offline: [WifiOff, 'Offline · saved here', 'warn', 'Changes are kept on this device and sync when you are back online.'],
-    error: [CloudOff, 'Save failed — retrying', 'bad', ''],
+    offline: [WifiOff, 'Offline · saved here', 'warn', native ? 'Changes are encrypted on this phone and sync when you are back online.' : 'Changes are kept on this device and sync when you are back online.'],
+    error: [CloudOff, 'Save failed — retrying', 'bad', native && cloud ? 'This change is not saved on the phone or in the cloud yet. Keep the app open; it retries on your next change.' : ''],
   };
   const [Icon, label, tone, tip] = map[s];
   return { Icon, label, tone, tip: tip || label };
@@ -293,14 +297,15 @@ function ConfirmHost() {
   const req = confirmReq.use();
   const [typed, setTyped] = useState('');
   if (!req) return null;
-  const done = (ok: boolean) => { req.resolve(ok); confirmReq.set(null); setTyped(''); };
-  const blocked = !!req.typeToConfirm && typed !== req.typeToConfirm;
+  const done = (ok: boolean) => { req.resolve(ok, typed); confirmReq.set(null); setTyped(''); };
+  const blocked = (!!req.typeToConfirm && typed !== req.typeToConfirm) || (!!req.secret && !typed);
   return (
     <Modal open onClose={() => done(false)} title={req.title} icon={req.danger ? TriangleAlert : undefined}
       footer={<><div className="grow" /><Btn onClick={() => done(false)}>Cancel</Btn><Btn variant={req.danger ? 'danger' : 'primary'} disabled={blocked} onClick={() => done(true)}>{req.ok ?? 'Confirm'}</Btn></>}>
       <div className="modal-b col">
         {req.body && <p className="dim">{req.body}</p>}
         {req.typeToConfirm && <label className="field"><span>Type {req.typeToConfirm} to confirm</span><input className="input" autoFocus value={typed} onChange={e => setTyped(e.target.value)} /></label>}
+        {req.secret && <label className="field"><span>Passphrase</span><input className="input" type="password" autoFocus autoComplete="off" value={typed} onChange={e => setTyped(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && typed) done(true); }} /></label>}
       </div>
     </Modal>
   );

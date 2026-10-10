@@ -2,6 +2,7 @@
 node_modules
 dist
 site
+mobile
 *.tsbuildinfo
 
 # personal planner data + backups (never commit)

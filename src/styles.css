@@ -108,11 +108,13 @@ p { margin: 0; }
 .hr { height: 1px; background: var(--line); margin: 10px 0; border: 0; }
 
 /* ============================================================ app shell */
-.app { display: grid; grid-template-columns: var(--side) minmax(0, 1fr); min-height: 100%; }
+/* The env() insets keep the shell clear of the status bar, navigation bar and display cutout in the Android app
+   (landscape phones and tablets use this wide layout too). They are all 0 in a desktop browser. */
+.app { display: grid; grid-template-columns: var(--side) minmax(0, 1fr); min-height: 100%; padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
 .side {
   position: sticky; top: 0; height: 100vh; overflow-y: auto;
   background: var(--bg-2); border-right: 1px solid var(--line);
-  padding: 16px 12px 20px; display: flex; flex-direction: column; gap: 4px;
+  padding: calc(16px + env(safe-area-inset-top)) 12px calc(20px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 4px;
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 14px; }
 .brand-name { font-family: var(--pixel); font-size: 13px; letter-spacing: 0.08em; }
@@ -133,7 +135,7 @@ p { margin: 0; }
 .main { min-width: 0; display: flex; flex-direction: column; }
 .top {
   position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 10px;
-  padding: 10px 24px; background: color-mix(in oklab, var(--bg) 82%, transparent);
+  padding: calc(10px + env(safe-area-inset-top)) 24px 10px; background: color-mix(in oklab, var(--bg) 82%, transparent);
   backdrop-filter: blur(12px); border-bottom: 1px solid var(--line);
 }
 .search-trigger {

@@ -1,11 +1,17 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Bell, Database, Download, Dumbbell, Flame, Keyboard, Lock, Moon, Palette, Plus, Sparkles, Target, Trash2, Upload, User, Utensils, Wallet, X, RotateCcw, Eraser } from 'lucide-react';
+import { Bell, BellRing, Database, Download, Dumbbell, Flame, Keyboard, KeyRound, LoaderCircle, Lock, Moon, Palette, Plus, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, Upload, User, Utensils, Wallet, X, RotateCcw, Eraser } from 'lucide-react';
 import type { MealSlot, Settings, WarningKind } from '../lib/types.ts';
-import { cloudBackups, confirmBox, lockDevice, restoreBackup, setSettings, storage, sync, toast, undo, update, useDB } from '../lib/store.ts';
+import { changePassphrase, cloudBackups, confirmBox, lockDevice, restoreBackup, setSettings, storage, sync, toast, undo, update, useDB } from '../lib/store.ts';
+import { WrongPassphrase } from '../lib/cloud.ts';
+import { device, setDevice, setRemind } from '../lib/device.ts';
+import { authenticate } from '../lib/native.ts';
+import { native } from '../lib/platform.ts';
+import { createChannels, reminderPermission, syncReminders, testReminder } from '../lib/reminders.ts';
+import { Vault } from '../lib/vault.ts';
 import { fmtDur, fmtTime, parseTime } from '../lib/dates.ts';
 import { ACCENTS, MEAL_SLOTS } from '../lib/meta.ts';
 import { clearAll, exportData, importData, removeDemo, resetDemo } from '../lib/io.ts';
-import { Btn, Card, Field, IconBtn, Seg, Toggle, nav } from '../components/ui.tsx';
+import { Btn, Card, Field, IconBtn, Modal, Seg, Toggle, nav } from '../components/ui.tsx';
 import { IconOf } from '../components/icons.tsx';
 
 const WARN_LABELS: Record<WarningKind, string> = {
@@ -109,13 +115,16 @@ export default function SettingsPage() {
               </Row>
             )}
           </Card>
+          {native && <RemindersCard />}
+          {native && <SecurityCard />}
           <Card title="Data" icon={Database}>
             <p className="small dim">{mode === 'cloud'
               ? 'Encrypted on this device with your passphrase, then synced. The server stores only unreadable data, plus one encrypted snapshot per day for 35 days.'
               : status === 'local' ? 'Running without the local server: data is stored in this browser. Export backups regularly.'
               : 'Stored on your disk in data/lifeos.json. A daily copy goes to data/backups (last 30 days kept). Deleting anything can be undone right after.'}</p>
             <div className="row wrap mt12">
-              <Btn icon={Download} onClick={exportData}>Export data</Btn>
+              <Btn icon={Download} onClick={() => exportData()}>Export data</Btn>
+              {mode === 'cloud' && <Btn icon={Lock} onClick={() => exportData(true)}>Export encrypted</Btn>}
               <Btn icon={Upload} onClick={() => file.current?.click()}>Import data</Btn>
               <input ref={file} type="file" accept="application/json,.json" hidden onChange={e => { const f = e.target.files?.[0]; if (f) importData(f); e.target.value = ''; }} />
             </div>
@@ -184,14 +193,18 @@ function FoodEditor() {
 function CloudData() {
   const [days, setDays] = useState<string[]>([]);
   const [day, setDay] = useState('');
-  useEffect(() => { cloudBackups().then(setDays); }, []);
+  const [changing, setChanging] = useState(false);
+  useEffect(() => { if (!changing) cloudBackups().then(setDays); }, [changing]);
   const restore = async () => {
     if (!day || !(await confirmBox(`Restore the backup from ${day}?`, { body: 'Your planner is replaced by that day\'s snapshot. You can undo right after.', ok: 'Restore' }))) return;
     if (await restoreBackup(day)) toast(`Restored ${day}`, { action: 'Undo', onAction: undo });
     else toast('That backup could not be loaded', { kind: 'warn' });
   };
   const lock = async () => {
-    if (await confirmBox('Lock this device?', { body: 'Removes the passphrase and the local copy from this device. The encrypted cloud copy stays. You will need your passphrase to open Life OS here again.', ok: 'Lock' })) lockDevice();
+    if (await confirmBox('Lock this device?', { body: 'Removes the passphrase and the local copy from this device. The encrypted cloud copy stays. You will need your passphrase to open Life OS here again.', ok: 'Lock' })) {
+      if (native) await syncReminders([], true).catch(() => {}); // nothing keeps ringing for a planner this phone can no longer open
+      lockDevice();
+    }
   };
   return (
     <>
@@ -203,7 +216,121 @@ function CloudData() {
         </select>
         <Btn disabled={!day} onClick={restore}>Restore</Btn>
         <Btn icon={Lock} onClick={lock}>Lock this device</Btn>
+        <Btn icon={KeyRound} onClick={() => setChanging(true)}>Change passphrase</Btn>
       </div>
+      {changing && <ChangePassphrase close={() => setChanging(false)} />}
     </>
+  );
+}
+
+function ChangePassphrase({ close }: { close: () => void }) {
+  const [cur, setCur] = useState('');
+  const [pass, setPass] = useState('');
+  const [again, setAgain] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (busy || !cur) return;
+    if (pass.length < 10) { setErr('Use at least 10 characters. A few random words work well.'); return; }
+    if (pass !== again) { setErr('The two new passphrases do not match.'); return; }
+    setErr(''); setBusy(true);
+    try { await changePassphrase(cur, pass); toast('Passphrase changed. Your other devices will ask for the new one.'); close(); }
+    catch (e) { setErr(e instanceof WrongPassphrase ? e.message : 'Could not change it. Check your connection and try again.'); setBusy(false); }
+  };
+  return (
+    <Modal open onClose={close} title="Change passphrase" icon={KeyRound}>
+      <form className="modal-b col gap-12" onSubmit={e => { e.preventDefault(); submit(); }}>
+        <p className="small dim">Your planner is encrypted again with the new passphrase. Your other devices will ask for it once. Daily backups made before the change are removed, because only the old passphrase could read them.</p>
+        <Field label="Current passphrase"><input className="input" type="password" autoFocus autoComplete="current-password" value={cur} onChange={e => setCur(e.target.value)} /></Field>
+        <Field label="New passphrase"><input className="input" type="password" autoComplete="new-password" value={pass} onChange={e => setPass(e.target.value)} /></Field>
+        <Field label="Repeat it"><input className="input" type="password" autoComplete="new-password" value={again} onChange={e => setAgain(e.target.value)} /></Field>
+        <div className="warn-item warn"><TriangleAlert /><span>Nobody can reset this. If you forget the new one, the cloud copy cannot be read by anyone, including you.</span></div>
+        {err && <div className="warn-item bad"><TriangleAlert /><span>{err}</span></div>}
+        <Btn variant="primary" type="submit" disabled={busy} icon={busy ? LoaderCircle : KeyRound}>{busy ? 'Encrypting again…' : 'Change passphrase'}</Btn>
+      </form>
+    </Modal>
+  );
+}
+
+function TimeInput({ value, onChange, label }: { value: number; onChange: (min: number) => void; label: string }) {
+  return <input className="input" type="time" aria-label={label} value={fmtTime(value)} style={{ width: 112 }} onChange={e => e.target.value && onChange(parseTime(e.target.value))} />;
+}
+
+/** Android app only. Reminders are planned on the phone (lib/reminders.ts); nothing here is synced. */
+function RemindersCard() {
+  const r = device.use().remind;
+  const [perm, setPerm] = useState<'granted' | 'denied' | 'prompt'>('prompt');
+  useEffect(() => { reminderPermission().then(setPerm).catch(() => {}); }, [r.on]);
+  const turn = async (on: boolean) => {
+    if (!on) { setRemind({ on: false }); return; }
+    const p = await reminderPermission(true).catch(() => 'denied' as const);
+    setPerm(p);
+    if (p !== 'granted') { toast('Android is blocking notifications for Life OS. Allow them under Settings → Apps → Life OS → Notifications. The alert bell inside the app keeps working either way.', { kind: 'warn' }); return; }
+    await createChannels().catch(() => {});
+    setRemind({ on: true });
+  };
+  return (
+    <Card title="Reminders" icon={BellRing}>
+      <Row label="Reminders on this phone" hint={r.on && perm === 'denied' ? <span className="bad">Blocked in Android settings, so nothing will show</span> : perm === 'granted' ? 'Allowed by Android' : 'Android asks for permission when you turn this on'}>
+        <Toggle on={r.on} onChange={turn} label="Reminders on this phone" />
+      </Row>
+      {r.on && (
+        <>
+          <Row label="Tasks and exams due" hint="One reminder on the day">
+            <TimeInput label="Time for due reminders" value={r.tasksAt} onChange={tasksAt => setRemind({ tasksAt })} /><Toggle on={r.tasks} onChange={tasks => setRemind({ tasks })} label="Tasks and exams due" />
+          </Row>
+          <Row label="Schedule" hint="Before each time block starts">
+            <Num value={r.blocksLead} onChange={blocksLead => setRemind({ blocksLead: Math.min(120, blocksLead) })} suffix="min" w={64} /><Toggle on={r.blocks} onChange={blocks => setRemind({ blocks })} label="Schedule" />
+          </Row>
+          <Row label="Habit check-in" hint="Only when something is still open">
+            <TimeInput label="Time for the habit check-in" value={r.habitsAt} onChange={habitsAt => setRemind({ habitsAt })} /><Toggle on={r.habits} onChange={habits => setRemind({ habits })} label="Habit check-in" />
+          </Row>
+          <Row label="Sleep" hint="Wind-down before bedtime, and a morning nudge to log it">
+            <Num value={r.sleepLead} onChange={sleepLead => setRemind({ sleepLead: Math.min(180, sleepLead) })} suffix="min" w={64} /><Toggle on={r.sleep} onChange={sleep => setRemind({ sleep })} label="Sleep" />
+          </Row>
+          <Row label="Focus timer" hint="When a session or break ends while the app is in the background">
+            <Toggle on={r.focus} onChange={focus => setRemind({ focus })} label="Focus timer" />
+          </Row>
+          <Row label="Quiet hours" hint="Nothing is scheduled inside this window">
+            <TimeInput label="Quiet from" value={r.quietFrom} onChange={quietFrom => setRemind({ quietFrom })} /><TimeInput label="Quiet until" value={r.quietTo} onChange={quietTo => setRemind({ quietTo })} /><Toggle on={r.quiet} onChange={quiet => setRemind({ quiet })} label="Quiet hours" />
+          </Row>
+          <Row label="Show details" hint="Names tasks and time blocks in the notification. Off keeps the text generic, which is safer on a lock screen">
+            <Toggle on={r.detail} onChange={detail => setRemind({ detail })} label="Show details" />
+          </Row>
+          <div className="row wrap mt8"><Btn size="sm" onClick={() => testReminder().catch(() => toast('Android did not accept the test. Check that notifications are allowed.', { kind: 'warn' }))}>Send a test</Btn></div>
+          <p className="tiny muted mt8">Planned on this phone for the next 7 days and refreshed whenever you open Life OS. No internet needed. Android may deliver them a few minutes late; if they go missing, set Life OS to Unrestricted under Android Settings → Apps → Life OS → Battery.</p>
+        </>
+      )}
+    </Card>
+  );
+}
+
+/** Android app only. */
+function SecurityCard() {
+  const d = device.use();
+  const setLock = async (lock: boolean) => {
+    if (lock && !(await Vault.canAuthenticate().catch(() => ({ available: false }))).available) {
+      toast('Set up a screen lock or fingerprint in Android settings first.', { kind: 'warn' });
+      return;
+    }
+    if (await authenticate()) setDevice({ lock }); // prove it is you, to turn it on and to turn it off
+  };
+  return (
+    <Card title="App security" icon={ShieldCheck}>
+      <Row label="App lock" hint="Ask for your fingerprint, face or screen lock before showing the planner">
+        <Toggle on={d.lock} onChange={setLock} label="App lock" />
+      </Row>
+      {d.lock && (
+        <Row label="Lock again after" hint="Time in the background before it asks again">
+          <select className="select" style={{ width: 140 }} aria-label="Lock again after" value={d.lockAfter} onChange={e => setDevice({ lockAfter: Number(e.target.value) })}>
+            <option value={0}>Every time</option><option value={1}>1 minute</option><option value={5}>5 minutes</option><option value={15}>15 minutes</option>
+          </select>
+        </Row>
+      )}
+      <Row label="Allow screenshots" hint="Off blocks screenshots and screen recording. The recent-apps preview stays hidden on Android 13 and newer either way">
+        <Toggle on={d.screenshots} onChange={screenshots => { setDevice({ screenshots }); Vault.setSecure({ on: !screenshots }).catch(() => {}); }} label="Allow screenshots" />
+      </Row>
+      <p className="tiny muted mt8">Your planner and sync keys are stored encrypted on this phone with a key held by Android's Keystore. The app lock is an extra screen in front of that. It does not replace your phone's own lock.</p>
+    </Card>
   );
 }

@@ -13,6 +13,7 @@ import {
 import { conflictsFor, fmtPace, habitDone, lastSets, activeHabits, sleepLeft, sleepMin, subtasksOf, isDone } from '../lib/derive.ts';
 import { addWater, parseTaskText, toggleBlockDone, markMissed, skipOccurrence, toggleHabit, toggleTask } from '../lib/actions.ts';
 import { Btn, CheckBox, Chips, IconBtn, Modal, MoodPick, Pill, QuickAdd, Toggle } from './ui.tsx';
+import { safeHref } from '../lib/platform.ts';
 import { ICONS, IconOf } from './icons.tsx';
 
 // ------------------------------------------------------------------ requests
@@ -697,7 +698,7 @@ function LinksEditor({ v, set }: { v: any; set: (v: any) => void }) {
       <div className="label" style={{ marginBottom: 6 }}><Link2 />Links</div>
       {links.map((l, i) => (
         <div className="li" key={i}>
-          <a className="grow ellipsis accent" href={l.url} target="_blank" rel="noreferrer">{l.label || l.url}</a>
+          <a className="grow ellipsis accent" href={safeHref(l.url)} target="_blank" rel="noreferrer">{l.label || l.url}</a>
           <IconBtn icon={X} sm label="Remove link" onClick={() => set({ ...v, links: links.filter((_, j) => j !== i) })} />
         </div>
       ))}

@@ -3,6 +3,8 @@ import { add, getDB, signal, toast } from './store.ts';
 import { isLate } from './derive.ts';
 import { recordFocus } from './actions.ts';
 import { fmtDate } from './dates.ts';
+import { native } from './platform.ts';
+import { secure } from './vault.ts';
 
 export interface FocusLink { courseId?: string; projectId?: string; taskId?: string; label?: string }
 export interface TimerState {
@@ -21,10 +23,12 @@ export interface TimerState {
 const KEY = 'lifeos.timer';
 const initial: TimerState = { kind: 'focus', phase: 'idle', workMin: 25, breakMin: 5, link: {}, cycles: 0 };
 const load = (): TimerState => {
+  if (native) return initial; // the app keeps this encrypted, so it arrives a moment later (below)
   try { return { ...initial, ...JSON.parse(localStorage.getItem(KEY) ?? '{}') }; } catch { return initial; }
 };
 export const timer = signal<TimerState>(load());
-timer.subscribe(() => { try { localStorage.setItem(KEY, JSON.stringify(timer.get())); } catch { /* ignore */ } });
+if (native) secure.get(KEY).then(v => { if (v && timer.get() === initial) timer.set({ ...initial, ...JSON.parse(v) }); }).catch(() => {});
+timer.subscribe(() => { secure.set(KEY, JSON.stringify(timer.get())).catch(() => {}); });
 
 export const remainingMs = (s: TimerState, now = Date.now()) =>
   s.phase === 'idle' ? s.workMin * 60000 : s.left !== undefined ? s.left : Math.max(0, (s.endsAt ?? now) - now);

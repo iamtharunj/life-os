@@ -38,8 +38,28 @@ upload; the server (`api/cloud.js`) stores only an unreadable blob, a hash of an
 - **Forgotten passphrase = unreadable cloud copy.** Nobody can reset it. Keep an exported backup.
 - Two devices: a device with stale data is refused and loads the newer copy instead of overwriting it.
 - One encrypted snapshot per day is kept for 35 days (Settings → Data → Restore a daily backup).
-- Start over: delete the `lifeos:*` keys in the Upstash console; the next visit asks for a new passphrase.
+- Change the passphrase: Settings → Data → Change passphrase. Other devices ask for the new one; daily backups from
+  before the change are removed (only the old passphrase could read them).
+- Start over: Settings → Data → Lock this device on every device, then delete the `lifeos:*` keys in the Upstash
+  console; the next visit asks for a new passphrase.
 - The local version (`npm start`) keeps working and keeps its own separate data file.
+
+## Android app
+
+The same app as an installable APK (Capacitor 8), syncing with the hosted backend above. On the phone the planner
+and the sync keys are stored encrypted with an Android Keystore key, there is an optional app lock, and reminders
+are local notifications.
+
+```
+npm run android:apk      # -> android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+- Build, install and release notes: [docs/ANDROID_BUILD.md](docs/ANDROID_BUILD.md)
+- What is protected and what is not: [docs/ANDROID_SECURITY_AUDIT.md](docs/ANDROID_SECURITY_AUDIT.md)
+- What was tested, and the checklist to run on your phone: [docs/ANDROID_TEST_PLAN.md](docs/ANDROID_TEST_PLAN.md)
+
+The app can only sync once the backend in this repository (`api/cloud.js`) has been deployed, because that is what
+lets the app's origin call it.
 
 ## Your data
 

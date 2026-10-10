@@ -242,6 +242,7 @@ function HabitsCard() {
   const done = hs.filter(h => habitDone(d, h, T)).length;
   return (
     <Card title="Habits" icon={Flame} actions={<><span className="tiny muted num">{done}/{hs.length}</span><Btn size="sm" variant="ghost" onClick={() => nav('/habits')}>Grid</Btn></>}>
+      {hs.length === 0 && <Empty title="No habits yet" hint="Track only what genuinely matters." action={<Btn size="sm" icon={Plus} onClick={() => openEditor('habit')}>Add habit</Btn>} />}
       <div className="col gap-4">
         {hs.map(h => {
           const on = habitDone(d, h, T);

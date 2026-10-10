@@ -4,6 +4,7 @@
 //   node server.mjs --lan      also reachable from your phone on the same Wi-Fi (no auth — trusted networks only)
 //   node server.mjs --build    build to dist/ and exit
 //   node server.mjs --site     build the deployable static site into site/ (used by Vercel) and exit
+//   node server.mjs --mobile   build the Android app's web assets into mobile/ (used by Capacitor) and exit
 // (Vite can't run from a folder whose path contains '#', so this replaces it.)
 import http from 'node:http';
 import fs from 'node:fs';
@@ -21,6 +22,8 @@ const DIST = path.join(ROOT, 'dist');
 const WEB = path.join(ROOT, 'web'); // manifest, icons, service worker: served from the site root
 const INDEX = path.join(ROOT, 'index.html');
 const SITE = args.has('--site');
+const MOBILE = args.has('--mobile');
+const MOBILE_OUT = path.join(ROOT, 'mobile');
 const DATA = path.join(ROOT, 'data');
 const DB_FILE = path.join(DATA, 'lifeos.json');
 const BACKUPS = path.join(DATA, 'backups');
@@ -31,11 +34,11 @@ const reloaders = new Set();
 const buildOpts = {
   entryPoints: [path.join(ROOT, 'src/main.tsx')],
   bundle: true,
-  outdir: DIST,
+  outdir: MOBILE ? path.join(MOBILE_OUT, 'dist') : DIST,
   jsx: 'automatic',
   loader: { '.woff2': 'file', '.woff': 'file' },
   minify: !DEV,
-  sourcemap: !SITE,
+  sourcemap: !SITE && !MOBILE,
   target: 'es2022',
   logLevel: 'warning',
   define: { 'process.env.NODE_ENV': DEV ? '"development"' : '"production"' },
@@ -50,6 +53,7 @@ const buildOpts = {
     },
   }],
 };
+if (MOBILE) fs.rmSync(MOBILE_OUT, { recursive: true, force: true }); // start clean: nothing stale ends up in the APK
 if (DEV) await (await esbuild.context(buildOpts)).watch();
 else await esbuild.build(buildOpts);
 if (SITE) {
@@ -59,6 +63,22 @@ if (SITE) {
   fs.cpSync(DIST, path.join(out, 'dist'), { recursive: true, filter: f => !f.endsWith('.map') });
   fs.copyFileSync(INDEX, path.join(out, 'index.html'));
   console.log('Built site/');
+  process.exit(0);
+}
+if (MOBILE) {
+  // Same bundle as the website, minus the service worker and manifest (the APK is the install). The policy lets the
+  // page run only its own files and talk only to itself and the production sync API.
+  const { CLOUD_ORIGIN } = await import('./src/lib/platform.ts');
+  const csp = [
+    "default-src 'none'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' data:", "font-src 'self'",
+    `connect-src 'self' ${CLOUD_ORIGIN}`, "object-src 'none'", "base-uri 'self'", "frame-src 'none'", "form-action 'none'",
+  ].join('; ');
+  const html = fs.readFileSync(INDEX, 'utf8')
+    .replace(/^[ \t]*<link rel="(manifest|apple-touch-icon)"[^\n]*\n/gm, '')
+    .replace('<meta charset="UTF-8" />', `<meta charset="UTF-8" />\n    <meta http-equiv="Content-Security-Policy" content="${csp}" />`);
+  if (!html.includes('Content-Security-Policy') || html.includes('manifest')) throw new Error('index.html changed: update the --mobile rewrite');
+  fs.writeFileSync(path.join(MOBILE_OUT, 'index.html'), html);
+  console.log('Built mobile/');
   process.exit(0);
 }
 if (args.has('--build')) { console.log('Built to dist/'); process.exit(0); }
